@@ -17,7 +17,8 @@ type probeEvent struct {
 	Family    uint16
 	Sport     uint16
 	Dport     uint16
-	_         [6]byte
+	Fd        uint16
+	Count     uint32
 	Retval    int64
 	ProbeType [16]int8
 }
