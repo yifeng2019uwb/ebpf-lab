@@ -94,39 +94,53 @@ if sn != "" {
 - ✅ 8 cross-domain: properly rejected
 - ⚠️ Pin/FD: warning printed, proceeds (acceptable)
 
-## Design Decision: Warning Handling for Pin/FD Programs
+## Design Question: Pin/FD Programs (sectionName == "")
 
 ### Problem
 When programs are loaded via pin or file descriptor, the ELF section name is unavailable. 
 We cannot validate the probe type (kprobe/kretprobe/uprobe/uretprobe).
 
-### Solution Implemented
-**Option chosen: Warning + Proceed**
-- Print warning to stderr
-- Allow attachment to proceed
-- Caller is responsible for correct link function
+### Two Options
 
-**Warning message:**
-```
-warning: cannot validate program type for %v: loaded via pin/FD, no section info available; 
-caller must use correct link function (Kprobe/Kretprobe vs Uprobe/Uretprobe)
+#### Option 1: Silent Skip
+Simply bypass validation with a comment explaining caller responsibility:
+```go
+// Pin/FD case: cannot validate, skip silently
+// Caller is responsible for using correct link function
 ```
 
-### Design Questions for Maintainers
+**Pros:**
+- No output, clean for production
+- Existing behavior preserved
+- No test noise
 
-1. **Is stderr warning appropriate?**
-   - Codebase uses stderr warnings in testutils for exceptional conditions
-   - Our warning is informational, not an error
-   - Should we suppress in tests?
+**Cons:**
+- Caller gets no hint about responsibility
+- Silent failure if wrong link is used
 
-2. **Alternative approaches considered:**
-   - Return error (breaks existing code that pins programs)
-   - Silent (caller has no hint about responsibility)
-   - Structured logging (future enhancement)
+---
 
-3. **Test impact:**
-   - Existing tests load programs via pin/FD
-   - Warning appears during test runs (noise but informative)
-   - Should we suppress stderr in tests?
+#### Option 2: Warning to stderr
+Print warning message when validation is skipped:
+```go
+fmt.Fprintf(os.Stderr, "warning: cannot validate program type for %v: loaded via pin/FD, no section info available; caller must use correct link function\n", prog)
+```
+
+**Pros:**
+- Caller is informed about the responsibility
+- Matches patterns in internal/testutils
+
+**Cons:**
+- Introduces stderr noise in production
+- Existing tests will see warnings
+- May impact test output parsing
+
+---
+
+### Question for Maintainers
+Which approach do you prefer for pin/FD programs?
+1. **Silent skip** (preserves existing behavior)
+2. **Warning** (informs caller)
+3. **Other approach?**
 
 
