@@ -7,21 +7,31 @@
 
 char __license[] SEC("license") = "GPL";
 
-// Event sent to userspace via map
+// Struct layout (40 bytes total, same size as before — fd/count fill old padding):
+//   offset  0  __u32 pid
+//   offset  4  __u16 family   kprobe/kretprobe: socket family (AF_INET=2, AF_INET6=10)
+//   offset  6  __u16 sport    kprobe/kretprobe: source port
+//   offset  8  __u16 dport    kprobe/kretprobe: dest port
+//   offset 10  __u16 fd       uprobe: write() fd at entry (e.g. 2=stderr); garbage at return
+//   offset 12  __u32 count    uprobe: write() byte count at entry; garbage at return
+//   offset 16  __s64 retval   uretprobe: bytes written at return; garbage at entry
+//   offset 24  char  probe_type[16]
 struct event {
     __u32 pid;
-    __u16 family;         // kretprobe: socket family (AF_INET=2, AF_INET6=10)
-    __u16 sport;          // kretprobe: source port
-    __u16 dport;          // kretprobe: dest port
-    __s64 retval;         // uretprobe: bytes written (or -errno)
-    char  probe_type[16]; // which probe fired: kprobe/kretprobe/uprobe/uretprobe
+    __u16 family;
+    __u16 sport;
+    __u16 dport;
+    __u16 fd;
+    __u32 count;
+    __s64 retval;
+    char  probe_type[16];
 };
 
 // Array map — 4 slots, one per probe type
-// index 0 = kprobe
-// index 1 = kretprobe
-// index 2 = uprobe
-// index 3 = uretprobe
+// index 0 = kprobe_accept
+// index 1 = kretprobe_accept
+// index 2 = uprobe_write
+// index 3 = uretprobe_write
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 4);
@@ -30,9 +40,8 @@ struct {
 } results SEC(".maps");
 
 // ── kprobe: fires at inet_csk_accept ENTRY ──────────────────────────────────
-// At entry: inet_csk_accept has NOT returned yet.
-// Trying to read the socket return value = reading garbage from rax register.
-// This demonstrates what happens when Kprobe() is used with a kretprobe program.
+// At entry: function has NOT returned yet. PT_REGS_RC reads rax = garbage.
+// Demonstrates: wrong values when kretprobe program runs here instead.
 SEC("kprobe/inet_csk_accept")
 int kprobe_accept(struct pt_regs *ctx)
 {
@@ -43,7 +52,7 @@ int kprobe_accept(struct pt_regs *ctx)
 
     e->pid = bpf_get_current_pid_tgid() >> 32;
 
-    // Reading "return value" at entry = garbage (rax not set yet)
+    // PT_REGS_RC = rax register, not yet set at entry → reads garbage
     struct sock *sk = (struct sock *)PT_REGS_RC(ctx);
     e->family = BPF_CORE_READ(sk, __sk_common.skc_family);
     e->sport  = BPF_CORE_READ(sk, __sk_common.skc_num);
@@ -54,8 +63,7 @@ int kprobe_accept(struct pt_regs *ctx)
 }
 
 // ── kretprobe: fires at inet_csk_accept RETURN ──────────────────────────────
-// At return: sk = the accepted socket (real return value from rax).
-// Reading family/sport/dport here gives correct values.
+// At return: sk = accepted socket (real rax value). Valid family/sport/dport.
 SEC("kretprobe/inet_csk_accept")
 int BPF_KRETPROBE(kretprobe_accept, struct sock *sk)
 {
@@ -77,26 +85,28 @@ int BPF_KRETPROBE(kretprobe_accept, struct sock *sk)
 }
 
 // ── uprobe: fires at write() ENTRY in libc ──────────────────────────────────
-// At entry: fd and count arguments are available in registers.
-// This is the correct usage for uprobe.
-// Demonstrates: if called via Uretprobe() instead → reads garbage return value
+// At entry: fd and count are in argument registers (rdi, rdx).
+// fd=2 for stderr, count=bytes requested.
+// If attached via Uretprobe() instead: registers clobbered → garbage fd/count.
 SEC("uprobe/write")
-int BPF_UPROBE(uprobe_write)
+int BPF_UPROBE(uprobe_write, int fd, const void *buf, size_t count)
 {
     __u32 key = 2;
     struct event *e = bpf_map_lookup_elem(&results, &key);
     if (!e)
         return 0;
 
-    e->pid = bpf_get_current_pid_tgid() >> 32;
+    e->pid   = bpf_get_current_pid_tgid() >> 32;
+    e->fd    = (__u16)fd;
+    e->count = (__u32)count;
 
     __builtin_memcpy(e->probe_type, "uprobe", 7);
     return 0;
 }
 
 // ── uretprobe: fires at write() RETURN in libc ──────────────────────────────
-// At return: retval = bytes written (or -errno on error).
-// If called via Uprobe() instead → reads garbage (rax not set at entry).
+// At return: retval = bytes actually written (or -errno).
+// If attached via Uprobe() instead: rax not set at entry → garbage retval.
 SEC("uretprobe/write")
 int BPF_URETPROBE(uretprobe_write, ssize_t retval)
 {

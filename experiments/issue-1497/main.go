@@ -20,14 +20,26 @@ const (
 	keyUretprobe = uint32(3)
 )
 
+// result mirrors the BPF struct event (40 bytes):
+//
+//	offset  0  pid    uint32
+//	offset  4  family uint16  kprobe/kretprobe: socket family (AF_INET=2, AF_INET6=10)
+//	offset  6  sport  uint16  kprobe/kretprobe: source port
+//	offset  8  dport  uint16  kprobe/kretprobe: dest port
+//	offset 10  fd     uint16  uprobe: write() fd (2=stderr at entry, garbage at return)
+//	offset 12  count  uint32  uprobe: write() byte count (valid at entry, garbage at return)
+//	offset 16  retval int64   uretprobe: bytes written (garbage if wrong hook)
+//	offset 24  probe_type[16] (not read in Go)
 type result struct {
 	attachErr error
 	pid       uint32
 	family    uint16
 	sport     uint16
 	dport     uint16
+	fd        uint16
+	count     uint32
 	retval    int64
-	fired     bool // true if program wrote to map (pid != 0)
+	fired     bool
 }
 
 func (r result) String() string {
@@ -37,8 +49,8 @@ func (r result) String() string {
 	if !r.fired {
 		return "program did not fire (no event)"
 	}
-	return fmt.Sprintf("pid=%-6d family=%-6d sport=%-6d dport=%-6d retval=%d",
-		r.pid, r.family, r.sport, r.dport, r.retval)
+	return fmt.Sprintf("pid=%-6d family=%-6d sport=%-6d dport=%-6d fd=%-4d count=%-6d retval=%d",
+		r.pid, r.family, r.sport, r.dport, r.fd, r.count, r.retval)
 }
 
 func main() {
@@ -71,7 +83,7 @@ func main() {
 	fmt.Println("══════════════════════════════════════════════════════════")
 
 	// ── Pair 1: kprobe program ────────────────────────────────────────────────
-	// kprobe_accept reads PT_REGS_RC at entry (wrong) vs return (right)
+	// kprobe_accept reads PT_REGS_RC (rax): garbage at entry, real sock* at return.
 	fmt.Println("\n── Pair 1: kprobe program (key 0) ──")
 	r1c := runTest(&objs, func() (link.Link, error) {
 		return link.Kprobe("inet_csk_accept", objs.KprobeAccept, nil)
@@ -83,7 +95,7 @@ func main() {
 		"kprobe prog + Kretprobe() [WRONG]  ", r1w)
 
 	// ── Pair 2: kretprobe program ─────────────────────────────────────────────
-	// kretprobe_accept — this is issue #1490 exact case
+	// Issue #1490 exact case: kretprobe prog via Kprobe() → garbage family/sport/dport.
 	fmt.Println("\n── Pair 2: kretprobe program (key 1) ──")
 	r2c := runTest(&objs, func() (link.Link, error) {
 		return link.Kretprobe("inet_csk_accept", objs.KretprobeAccept, nil)
@@ -95,11 +107,11 @@ func main() {
 		"kretprobe prog + Kprobe()    [WRONG]  ", r2w)
 
 	// ── Pair 3: uprobe program ────────────────────────────────────────────────
-	// uprobe_write only captures pid — same value at entry and return.
-	// Values won't differ between CORRECT and WRONG here.
-	// The proof of bug is: no attach error returned for the wrong combo.
+	// uprobe_write captures fd and count (separate fields, not reusing sport/dport).
+	// CORRECT (entry):  fd=2 (stderr), count=8 ("trigger\n")
+	// WRONG (return):   argument registers clobbered → garbage fd/count
 	fmt.Println("\n── Pair 3: uprobe program (key 2) ──")
-	fmt.Println("  (uprobe_write captures only pid; values won't differ — bug proven by no attach error)")
+	fmt.Println("  (fd=2=stderr, count=8 at entry; registers clobbered at return → garbage)")
 	r3c := runTest(&objs, func() (link.Link, error) {
 		return ex.Uprobe("write", objs.UprobeWrite, nil)
 	}, triggerWrite, keyUprobe)
@@ -110,6 +122,8 @@ func main() {
 		"uprobe prog + Uretprobe() [WRONG]  ", r3w)
 
 	// ── Pair 4: uretprobe program ─────────────────────────────────────────────
+	// CORRECT (return): retval = actual bytes written
+	// WRONG (entry):    rax not set at entry → garbage retval
 	fmt.Println("\n── Pair 4: uretprobe program (key 3) ──")
 	r4c := runTest(&objs, func() (link.Link, error) {
 		return ex.Uretprobe("write", objs.UretprobeWrite, nil)
@@ -120,19 +134,56 @@ func main() {
 	compare("uretprobe prog + Uretprobe() [CORRECT]", r4c,
 		"uretprobe prog + Uprobe()    [WRONG]  ", r4w)
 
-	// ── Cross-domain: kernel prog attached to userspace hook ──────────────────
-	// All share prog.Type()==Kprobe so library validation passes.
-	// Kernel may reject or silently accept — result is informative either way.
-	fmt.Println("\n── Cross-domain (key 0 and key 2) ──")
-	r5 := runTest(&objs, func() (link.Link, error) {
+	// ── Cross-domain A: kprobe/kretprobe programs on write() userspace hooks ──
+	// kprobe_accept reads rax as sock* — at write() return rax=bytes_written,
+	// which is interpreted as sock ptr → BPF_CORE_READ safely returns 0.
+	fmt.Println("\n── Cross-domain A: kernel programs on write() hooks (key 0 and key 1) ──")
+
+	rca1 := runTest(&objs, func() (link.Link, error) {
 		return ex.Uprobe("write", objs.KprobeAccept, nil)
 	}, triggerWrite, keyKprobe)
-	fmt.Printf("  kprobe prog + Uprobe() [cross-domain]: %s\n", r5)
+	fmt.Printf("  kprobe prog   + Uprobe(write)     [cross]: %s\n", rca1)
 
-	r6 := runTest(&objs, func() (link.Link, error) {
+	rca2 := runTest(&objs, func() (link.Link, error) {
+		return ex.Uretprobe("write", objs.KprobeAccept, nil)
+	}, triggerWrite, keyKprobe)
+	fmt.Printf("  kprobe prog   + Uretprobe(write)  [cross]: %s\n", rca2)
+
+	rca3 := runTest(&objs, func() (link.Link, error) {
+		return ex.Uprobe("write", objs.KretprobeAccept, nil)
+	}, triggerWrite, keyKretprobe)
+	fmt.Printf("  kretprobe prog + Uprobe(write)    [cross]: %s\n", rca3)
+
+	rca4 := runTest(&objs, func() (link.Link, error) {
+		return ex.Uretprobe("write", objs.KretprobeAccept, nil)
+	}, triggerWrite, keyKretprobe)
+	fmt.Printf("  kretprobe prog + Uretprobe(write) [cross]: %s\n", rca4)
+
+	// ── Cross-domain B: uprobe/uretprobe programs on inet_csk_accept kernel hooks ──
+	// uretprobe_write reads rax as retval — at kretprobe return rax=sock_ptr
+	// (a kernel address like 0xffff888...) → shows as huge retval value.
+	fmt.Println("\n── Cross-domain B: userspace programs on inet_csk_accept hooks (key 2 and key 3) ──")
+
+	rcb1 := runTest(&objs, func() (link.Link, error) {
 		return link.Kprobe("inet_csk_accept", objs.UprobeWrite, nil)
 	}, triggerTCP, keyUprobe)
-	fmt.Printf("  uprobe prog + Kprobe() [cross-domain]: %s\n", r6)
+	fmt.Printf("  uprobe prog    + Kprobe(accept)    [cross]: %s\n", rcb1)
+
+	rcb2 := runTest(&objs, func() (link.Link, error) {
+		return link.Kretprobe("inet_csk_accept", objs.UprobeWrite, nil)
+	}, triggerTCP, keyUprobe)
+	fmt.Printf("  uprobe prog    + Kretprobe(accept)  [cross]: %s\n", rcb2)
+
+	rcb3 := runTest(&objs, func() (link.Link, error) {
+		return link.Kprobe("inet_csk_accept", objs.UretprobeWrite, nil)
+	}, triggerTCP, keyUretprobe)
+	fmt.Printf("  uretprobe prog + Kprobe(accept)    [cross]: %s\n", rcb3)
+
+	rcb4 := runTest(&objs, func() (link.Link, error) {
+		return link.Kretprobe("inet_csk_accept", objs.UretprobeWrite, nil)
+	}, triggerTCP, keyUretprobe)
+	fmt.Printf("  uretprobe prog + Kretprobe(accept)  [cross]: %s\n", rcb4)
+	fmt.Println("  Note: uretprobe prog at kretprobe return reads sock_ptr as retval → huge number")
 
 	fmt.Println("\n══════════════════════════════════════════════════════════")
 	fmt.Println(" Phase 1 done. WRONG pairs show garbage vs correct values.")
@@ -145,7 +196,8 @@ func compare(labelC string, correct result, labelW string, wrong result) {
 	fmt.Printf("  %-45s %s\n", labelC, correct)
 	fmt.Printf("  %-45s %s\n", labelW, wrong)
 	if correct.attachErr == nil && wrong.attachErr == nil && correct.fired && wrong.fired {
-		if correct.family != wrong.family || correct.sport != wrong.sport || correct.retval != wrong.retval {
+		if correct.family != wrong.family || correct.sport != wrong.sport || correct.dport != wrong.dport ||
+			correct.fd != wrong.fd || correct.count != wrong.count || correct.retval != wrong.retval {
 			fmt.Println("  → values differ: WRONG is garbage (proves bug)")
 		} else {
 			fmt.Println("  → values same: may be coincidence or uninitialised zero")
@@ -168,7 +220,7 @@ func runTest(objs *probeObjects, attach func() (link.Link, error), trigger func(
 }
 
 func readMapEntry(objs *probeObjects, key uint32) result {
-	var raw [40]byte // sizeof(struct event) = 40; cilium/ebpf checks size matches exactly
+	var raw [40]byte
 	if err := objs.Results.Lookup(key, &raw); err != nil {
 		return result{attachErr: fmt.Errorf("map lookup: %w", err)}
 	}
@@ -177,6 +229,8 @@ func readMapEntry(objs *probeObjects, key uint32) result {
 		family: binary.LittleEndian.Uint16(raw[4:6]),
 		sport:  binary.LittleEndian.Uint16(raw[6:8]),
 		dport:  binary.LittleEndian.Uint16(raw[8:10]),
+		fd:     binary.LittleEndian.Uint16(raw[10:12]),
+		count:  binary.LittleEndian.Uint32(raw[12:16]),
 		retval: int64(binary.LittleEndian.Uint64(raw[16:24])),
 	}
 	r.fired = r.pid != 0
