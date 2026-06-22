@@ -87,7 +87,7 @@ if sn != "" {
 
 ## Results: All 20 Validation Cases Passing ✓
 
-![Test Results](Screenshot%202026-06-21%20at%207.53.59%20PM.png)
+![Test Results](TestResult.png)
 
 - ✅ 4 correct attachments: succeed
 - ✅ 4 wrong attachments: error with clear message
