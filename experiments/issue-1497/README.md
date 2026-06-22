@@ -96,6 +96,22 @@ offset 24  char  probe_type[16](16 bytes)
 total  40
 ```
 
+## Phase 1 results — volatility is proof of the bug
+
+**Pair 3 (uprobe program):** Captures fd and count from registers.
+- CORRECT (entry): relatively stable (fd=4, count=64 from Go runtime write)
+- WRONG (return):  **unpredictable** — sometimes fd=4,count=64 (lucky same write), sometimes garbage (different write caught by uretprobe)
+
+Running multiple times shows: garbage values change, cross-domain B values shift slightly. This volatility is **more proof** than fixed garbage:
+- Correct usage: deterministic (always captures the right data)
+- Wrong usage: non-deterministic (reads random kernel state or clobbered registers)
+
+**Cross-domain B rcb1 (uprobe prog + Kprobe):**
+- uprobe reads argument registers rdi/rdx at inet_csk_accept entry
+- rdi = struct sock *sk (kernel address, low 16 bits = ~37888, stable)
+- rdx = 2nd kernel arg (varies slightly each run: 2161261428 vs 2161261948)
+- The program "works" (no attach error) but reads completely wrong data
+
 ## How to run
 
 Requires Linux with kernel 5.8+, root, clang/llvm, libbpf-dev.
@@ -108,8 +124,9 @@ go generate .
 # 2. check compile errors (no root needed)
 go build .
 
-# 3. run Phase 1
+# 3. run Phase 1 (try multiple times to see volatility)
 sudo go run .
+sudo go run .   # run again — values in wrong cases will differ
 
 # 4. to run Phase 2: uncomment replace in go.mod, implement fix, then:
 sudo go run .
