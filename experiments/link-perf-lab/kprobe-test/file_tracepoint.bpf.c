@@ -1,0 +1,72 @@
+// go:build ignore
+
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+
+#define MAX_FILENAME_LEN 256
+#define O_RDONLY   0     // (read only)
+#define O_WRONLY   1     // (write only)
+#define O_RDWR     2     // (read + write)
+#define O_CREAT    64    // (create if not exists)
+#define O_APPEND   1024  // (append mode)
+
+struct file_event {
+    // Process info
+    __u32 pid;              // process ID
+    __u32 tid;              // thread ID
+    __u32 uid;              // user ID
+    __u32 gid;              // group ID
+    char comm[16];          // process name
+    
+    // File operation details
+    int dfd;                // directory fd
+    char filename[256];     // file path
+    int flags;              // open flags
+    int mode;               // file mode
+    
+    // Timing
+    __u64 timestamp;        // when event occurred
+    
+    // Context
+    // __u64 kernel_stack_id;  // kernel call stack
+    // __u64 stack_trace[128]; // kernel call stack trace, this is too large
+}; // 4+4+4+4+16+4+256+4+4+4 + 8  = 312 bytes <= 512 bytes
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, sizeof(struct file_event));
+    __uint(max_entries, 1024);
+//    __type(value, struct file_event);
+} events SEC(".maps");
+
+SEC("tracepoint/syscalls/sys_enter_openat") 
+int handle_sys_open(struct trace_event_raw_sys_enter *ctx)
+{
+    struct file_event ev = {};
+
+    u64 id = bpf_get_current_pid_tgid();
+    u32 tgid = id >> 32;
+    u32 tid = (u32)id;
+    ev.pid = tgid;
+    ev.tid = tid;
+
+    __u64 uid_gid = bpf_get_current_uid_gid();
+    ev.uid = uid_gid >> 32; // get user ID
+    ev.gid = uid_gid & 0xFFFFFFFF; // get group ID
+    bpf_get_current_comm(&ev.comm, sizeof(ev.comm)); // read process name
+
+    ev.dfd = ctx->args[0];
+    // ctx->args[1] is the filename pointer, we need to read the filename from the kernel space
+    bpf_probe_read_kernel_str(&ev.filename, sizeof(ev.filename), (const char *)ctx->args[1]);
+
+    ev.flags = ctx->args[2];
+    ev.mode = ctx->args[3];
+    ev.timestamp = bpf_ktime_get_ns();
+
+    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev)); //save event to current cpu(0)BPF_F_CURRENT_CPU
+    return 0;
+}  
+
+char __license[] SEC("license") = "GPL";

@@ -7,4 +7,5 @@ require github.com/cilium/ebpf v0.17.3
 require golang.org/x/sys v0.43.0 // indirect
 
 // Test against local cilium/ebpf changes:
-replace github.com/cilium/ebpf => /Users/yifengzh/workspace/ebpf
+// replace github.com/cilium/ebpf => /Users/yifengzh/workspace/ebpf
+tool github.com/cilium/ebpf/cmd/bpf2go
