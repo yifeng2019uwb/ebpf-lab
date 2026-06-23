@@ -58,8 +58,14 @@ int handle_sys_open(struct trace_event_raw_sys_enter *ctx)
     bpf_get_current_comm(&ev.comm, sizeof(ev.comm)); // read process name
 
     ev.dfd = ctx->args[0];
+
+    // args[0] = dirfd (int) - the directory file descriptor
+    // args[1] = pathname (pointer) - address of filename string in user-space
+    // args[2] = flags (int) - file flags
+    // args[3] = mode (int) - file mode
     // ctx->args[1] is the filename pointer, we need to read the filename from the kernel space
-    bpf_probe_read_kernel_str(&ev.filename, sizeof(ev.filename), (const char *)ctx->args[1]);
+    // bpf_probe_read_kernel_str(&ev.filename, sizeof(ev.filename), (const char *)ctx->args[1]);
+    bpf_probe_read_user_str(&ev.filename, sizeof(ev.filename), (const char *)ctx->args[1]);
 
     ev.flags = ctx->args[2];
     ev.mode = ctx->args[3];
