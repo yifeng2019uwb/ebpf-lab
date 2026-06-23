@@ -1,4 +1,4 @@
-// go:build ignore
+//go:build ignore
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
@@ -36,7 +36,7 @@ struct file_event {
 struct {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
     __uint(key_size, sizeof(__u32));
-    __uint(value_size, sizeof(struct file_event));
+    // __uint(value_size, sizeof(struct file_event)); // if self defined event, need use ring buf
     __uint(max_entries, 1024);
 //    __type(value, struct file_event);
 } events SEC(".maps");
