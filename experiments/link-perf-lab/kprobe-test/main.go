@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"unsafe"
+
+	"github.com/cilium/ebpf/rlimit"
 )
 
 type FileEvent struct {
@@ -21,4 +24,15 @@ type FileEvent struct {
 func main() {
 	size := unsafe.Sizeof(FileEvent{})
 	fmt.Printf("FileEvent size: %d bytes\n", size)
+
+	if err := rlimit.RemoveMemlock(); err != nil {
+		log.Fatalf("remove memlock: %v", err)
+	}
+
+	objs := fileTraceObjects{}
+	if err := loadFileTrace(&objs, nil); err != nil {
+		log.Fatalf("load BPF file objects: %v", err)
+	}
+	defer objs.Close()
+
 }
