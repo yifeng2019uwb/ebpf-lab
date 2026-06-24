@@ -2,17 +2,14 @@ package main
 
 import (
 	"bytes"
-	"context"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
-
-	// "unsafe"
-
-	"encoding/binary"
+	"time"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/perf"
@@ -54,8 +51,12 @@ type ReadWriteFileEvent struct {
 }
 
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// 2-minute timeout - program auto-exits
+	go func() {
+		time.Sleep(2 * time.Minute)
+		fmt.Println("\n2-minute timeout reached, exiting...")
+		os.Exit(0)
+	}()
 
 	// Handle Ctrl+C
 	sigChan := make(chan os.Signal, 1)
@@ -63,7 +64,7 @@ func main() {
 	go func() {
 		<-sigChan
 		fmt.Println("\nShutting down...")
-		cancel()
+		os.Exit(0)
 	}()
 
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -161,7 +162,8 @@ func main() {
 		for {
 			oe, err := oe_reader.Read()
 			if err != nil {
-				log.Fatalf("read: %v", err)
+				log.Printf("read error: %v", err)
+				return
 			}
 
 			// Parse raw bytes into FileEvent
@@ -177,7 +179,6 @@ func main() {
 					event_open.PID, event_open.GID, event_open.UID, event_open.TID, filename, event_open.Flags, event_open.Timestamp)
 			}
 		}
-		<-ctx.Done() // Wait for cancellation
 	}()
 
 	// Close Event READ goroutine
@@ -185,7 +186,8 @@ func main() {
 		for {
 			ce, err := ce_reader.Read()
 			if err != nil {
-				log.Fatalf("read: %v", err)
+				log.Printf("read error: %v", err)
+				return
 			}
 
 			// Parse raw bytes into FileEvent
@@ -197,9 +199,7 @@ func main() {
 
 			fmt.Printf("Close Event: PID=%d, GID=%d, UID=%d, TID=%d, fd=%d, timestamp=%d\n",
 				event_close.PID, event_close.GID, event_close.UID, event_close.TID, event_close.FD, event_close.Timestamp)
-
 		}
-		<-ctx.Done() // Wait for cancellation
 	}()
 
 	// Read Event READ goroutine
@@ -207,7 +207,8 @@ func main() {
 		for {
 			rf, err := rf_reader.Read()
 			if err != nil {
-				log.Fatalf("read: %v", err)
+				log.Printf("read error: %v", err)
+				return
 			}
 
 			// Parse raw bytes into FileEvent
@@ -219,9 +220,7 @@ func main() {
 
 			fmt.Printf("Read Event: PID=%d, GID=%d, UID=%d, TID=%d, SIZE=%d, timestamp=%d\n",
 				read_event.PID, read_event.GID, read_event.UID, read_event.TID, read_event.SIZE, read_event.Timestamp)
-
 		}
-		<-ctx.Done() // Wait for cancellation
 	}()
 
 	// Write Event READ goroutine
@@ -229,7 +228,8 @@ func main() {
 		for {
 			wf, err := wf_reader.Read()
 			if err != nil {
-				log.Fatalf("read: %v", err)
+				log.Printf("read error: %v", err)
+				return
 			}
 
 			// Parse raw bytes into FileEvent
@@ -241,11 +241,9 @@ func main() {
 
 			fmt.Printf("Write Event: PID=%d, GID=%d, UID=%d, TID=%d, SIZE=%d, timestamp=%d\n",
 				write_event.PID, write_event.GID, write_event.UID, write_event.TID, write_event.SIZE, write_event.Timestamp)
-
 		}
-		<-ctx.Done() // Wait for cancellation
 	}()
 
-	select {} // Block forever until Ctrl+C
+	select {} // Block forever until 2-minute timeout or Ctrl+C
 
 }
