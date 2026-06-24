@@ -1,146 +1,74 @@
-# Lab Experiment: issue #1497 — kprobe/kretprobe mismatch
+# Lab Experiment: Issue #1497 — kprobe/kretprobe mismatch
 
-**⚠️ This is a lab draft for design discussion, NOT production code.**
+**Status: ❌ ARCHIVED (Won't Fix)**
 
-- Design validation only (concept proof)
-- Real implementation in: `/workspace/ebpf/` (prog.go, kprobe.go, uprobe.go)
-- For GitHub discussion: https://github.com/cilium/ebpf/issues/1497
+**GitHub Issue:** https://github.com/cilium/ebpf/issues/1497
 
-## What this tests
-
-The cilium/ebpf library does not return an error when a probe program is attached
-via the wrong link function. All four probe types share BPF_PROG_TYPE_KPROBE, so
-the existing `prog.Type() != ebpf.Kprobe` check cannot distinguish them:
-
-```
-SEC("kprobe/...")    → BPF_PROG_TYPE_KPROBE  ← same
-SEC("kretprobe/...") → BPF_PROG_TYPE_KPROBE  ← same
-SEC("uprobe/...")    → BPF_PROG_TYPE_KPROBE  ← same
-SEC("uretprobe/...") → BPF_PROG_TYPE_KPROBE  ← same
-```
-
-## Real-world bug reference
-
-**Issue #1490:** https://github.com/cilium/ebpf/issues/1490
-Developer used `SEC("kretprobe/inet_csk_accept")` but called `link.Kprobe()` in Go.
-Result: garbage output, no error from library.
-
-**Exact case discussed:** https://github.com/cilium/ebpf/discussions/1490#discussioncomment-9821116
-The developer had to debug by manually checking which function was being called.
-Our fix catches this immediately with a clear error message.
-
-## Solution Implemented
-
-**1. Added `sectionName` field to Program struct (prog.go):**
-```go
-type Program struct {
-	VerifierLog string
-	fd          *sys.FD
-	name        string
-	pinnedPath  string
-	typ         ProgramType
-	sectionName string    // NEW: tracks ELF section origin
-	btf         *btf.Handle
-}
-
-// Expose section name via getter method
-func (p *Program) SectionName() string {
-	return p.sectionName
-}
-```
-
-**2. Validation logic in Kprobe/Kretprobe (link/kprobe.go):**
-```go
-// Validate entry/return hook type matches program section
-sn := prog.SectionName()
-if sn != "" {
-	if ret {
-		// Kretprobe() called, section must be "kretprobe/"
-		if !strings.HasPrefix(sn, "kretprobe/") {
-			return nil, fmt.Errorf("program is %s, cannot attach via Kretprobe(); use appropriate link", sn)
-		}
-	} else {
-		// Kprobe() called, section must be "kprobe/"
-		if !strings.HasPrefix(sn, "kprobe/") {
-			return nil, fmt.Errorf("program is %s, cannot attach via Kprobe(); use appropriate link", sn)
-		}
-	}
-} else {
-	// Pin/FD case: cannot validate, warn caller
-	fmt.Fprintf(os.Stderr, "warning: cannot validate program type for %v: loaded via pin/FD, no section info available; caller must use correct link function (Kprobe/Kretprobe vs Uprobe/Uretprobe)\n", prog)
-}
-```
-
-**Same validation applied to:** uprobe.go (Uprobe/Uretprobe functions)
-
-**Test Coverage:**
-- ✅ 4 correct attachments (no error)
-- ✅ 4 wrong attachments (error with message)
-- ✅ 8 cross-domain mismatches (properly rejected)
-- ✅ Pin/FD limitation (warning + proceed)
-
-## Test Coverage: 20 Cases
-
-- 4 probe pairs (entry vs return hooks for each type)
-- 8 cross-domain (kernel program on user hook, vice versa)
-- Pin/FD (validation skipped, warning printed)
-
-## Results: All 20 Validation Cases Passing ✓
-
-![Test Results](TestResult.png)
-
-- ✅ 4 correct attachments: succeed
-- ✅ 4 wrong attachments: error with clear message
-- ✅ 8 cross-domain: properly rejected
-- ⚠️ Pin/FD: warning printed, proceeds (acceptable)
-
-## Design Question: Pin/FD Programs (sectionName == "")
-
-### Problem
-When programs are loaded via pin or file descriptor, the ELF section name is unavailable. 
-We cannot validate the probe type (kprobe/kretprobe/uprobe/uretprobe).
-
-### Two Options
-
-#### Option 1: Silent Skip
-Simply bypass validation with a comment explaining caller responsibility:
-```go
-// Pin/FD case: cannot validate, skip silently
-// Caller is responsible for using correct link function
-```
-
-**Pros:**
-- No output, clean for production
-- Existing behavior preserved
-- No test noise
-
-**Cons:**
-- Caller gets no hint about responsibility
-- Silent failure if wrong link is used
+**Decision Date:** 2026-06-24
 
 ---
 
-#### Option 2: Warning to stderr
-Print warning message when validation is skipped:
-```go
-fmt.Fprintf(os.Stderr, "warning: cannot validate program type for %v: loaded via pin/FD, no section info available; caller must use correct link function\n", prog)
-```
+## Why This Experiment Was Abandoned
 
-**Pros:**
-- Caller is informed about the responsibility
-- Matches patterns in internal/testutils
+The cilium/ebpf maintainers decided to **close this issue as "won't fix"** with this reasoning:
 
-**Cons:**
-- Introduces stderr noise in production
-- Existing tests will see warnings
-- May impact test output parsing
+> "I'd suggest we close this issue as 'won't fix' since this shouldn't happen that often in practice... I'd rather not invest too much time here, given that fprobes are expected to mostly take over what k(ret)probes did in the past."
+
+**Key points:**
+1. Problem is real but rare in practice
+2. Proposed solution (sectionName) is incomplete (doesn't help with pin/FD cases)
+3. **Better future:** ecosystem moving toward fentry/fexit (fprobes), not patching kprobe/kretprobe
+4. fentry/fexit don't have this confusion by design
 
 ---
 
-### Question for Maintainers
-Which approach do you prefer for pin/FD programs?
-1. **Silent skip** (preserves existing behavior)
-2. **Warning** (informs caller)
-3. **Other approach?**
+## What This Lab Showed
 
+Successfully demonstrated that the cilium/ebpf library does NOT validate probe type mismatches:
 
+```
+SEC("kprobe/...")    → BPF_PROG_TYPE_KPROBE  ← all four map
+SEC("kretprobe/...") → BPF_PROG_TYPE_KPROBE  ← to the same
+SEC("uprobe/...")    → BPF_PROG_TYPE_KPROBE  ← program type
+SEC("uretprobe/...") → BPF_PROG_TYPE_KPROBE  ← (issue #1490)
+```
+
+**Real-world impact:** Issue #1490 — developer attached kretprobe program via `link.Kprobe()`, got garbage data, no error from library.
+
+---
+
+## Solution That Was Proposed (Not Merged)
+
+Added `sectionName` field to Program struct to validate correct attachment:
+- **4 correct cases:** pass
+- **4 wrong cases:** error with clear message
+- **8 cross-domain:** properly rejected
+- **Pin/FD limitation:** cannot validate (acceptable)
+
+All 20 test cases passed. See NOTES.md for implementation details.
+
+---
+
+## Learning Value
+
+This experiment demonstrates:
+1. **Root cause analysis** — why different probe types share the same BPF_PROG_TYPE_KPROBE
+2. **Design decisions** — tradeoffs between validation completeness and pin/FD limitations
+3. **Why future is fentry/fexit** — they avoid this problem by design (entry vs exit is syntactically explicit)
+
+---
+
+## For Reference
+
+- **Real-world bug:** https://github.com/cilium/ebpf/issues/1490
+- **Original issue:** https://github.com/cilium/ebpf/issues/1497
+- **Test evidence:** TestResult.png (20/20 validation cases passed)
+- **Implementation notes:** NOTES.md (technical details of proposed solution)
+
+---
+
+## Takeaway
+
+Don't fix broken kprobe/kretprobe — **use fentry/fexit instead!**
+
+See: `docs/learning/link-deep-dive.md` → fentry/fexit section
