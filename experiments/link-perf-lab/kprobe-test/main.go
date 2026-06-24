@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"slices"
 	"strings"
+	"syscall"
 
 	// "unsafe"
 
@@ -35,7 +39,7 @@ type CloseFileEvent struct {
 	UID       uint32
 	GID       uint32
 	FD        int32
-	PAD	  uint32
+	PAD       uint32
 	Timestamp uint64
 }
 
@@ -50,11 +54,20 @@ type ReadWriteFileEvent struct {
 	Timestamp uint64
 }
 
-var excludeTIDs = [6]uint32{15314, 285, 15312, 15316, 15318, 15320}
+var excludeTIDs = [6]uint32{16363, 285, 17901, 17880, 17846, 17845}
 
 func main() {
-	// size := unsafe.Sizeof(OpenFileEvent{})
-	// fmt.Printf("FileEvent size: %d bytes\n", size)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle Ctrl+C
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT)
+	go func() {
+		<-sigChan
+		fmt.Println("\nShutting down...")
+		cancel()
+	}()
 
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatalf("remove memlock: %v", err)
@@ -167,6 +180,7 @@ func main() {
 					event_open.PID, event_open.GID, event_open.UID, event_open.TID, filename, event_open.Flags, event_open.Timestamp)
 			}
 		}
+		<-ctx.Done() // Wait for cancellation
 	}()
 
 	// Close Event READ goroutine
@@ -190,6 +204,7 @@ func main() {
 					event_close.PID, event_close.GID, event_close.UID, event_close.TID, event_close.FD, event_close.Timestamp)
 			}
 		}
+		<-ctx.Done() // Wait for cancellation
 	}()
 
 	// Read Event READ goroutine
@@ -214,6 +229,7 @@ func main() {
 			}
 
 		}
+		<-ctx.Done() // Wait for cancellation
 	}()
 
 	// Write Event READ goroutine
@@ -237,6 +253,7 @@ func main() {
 					write_event.PID, write_event.GID, write_event.UID, write_event.TID, write_event.SIZE, write_event.Timestamp)
 			}
 		}
+		<-ctx.Done() // Wait for cancellation
 	}()
 
 	select {} // Block forever until Ctrl+C
