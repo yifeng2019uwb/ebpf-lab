@@ -42,7 +42,7 @@ struct file_close_event {
 
         // File operation details
         int fd;               // directory fd  ← change to: // file descriptor
-        
+        __u32 pad;        
         // Timing
         __u64 timestamp;        // when event occurred
 };
@@ -56,6 +56,7 @@ struct file_read_write_event {
     
     // File operation details
     int fd;                // directory fd  ← change to: // file descriptor
+    __u32 pad;
     __u64 size;              // bytes to read/write
     
     // Timing

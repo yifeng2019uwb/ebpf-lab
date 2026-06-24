@@ -35,6 +35,7 @@ type CloseFileEvent struct {
 	UID       uint32
 	GID       uint32
 	FD        int32
+	PAD	  uint32
 	Timestamp uint64
 }
 
@@ -44,6 +45,7 @@ type ReadWriteFileEvent struct {
 	UID       uint32
 	GID       uint32
 	FD        int32
+	PAD       uint32
 	SIZE      uint64
 	Timestamp uint64
 }
