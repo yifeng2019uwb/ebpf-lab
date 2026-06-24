@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"slices"
 	"strings"
 	"syscall"
 
@@ -53,8 +52,6 @@ type ReadWriteFileEvent struct {
 	SIZE      uint64
 	Timestamp uint64
 }
-
-var excludeTIDs = [6]uint32{16363, 285, 17901, 17880, 17846, 17845}
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -176,7 +173,7 @@ func main() {
 
 			filename := strings.TrimRight(string(event_open.Filename[:]), "\x00")
 			if strings.HasPrefix(filename, "/root/workspace/") {
-				fmt.Printf("Event: PID=%d, GID=%d, UID=%d, TID=%d, File=%s Flags=%d, timestamp=%d\n",
+				fmt.Printf("Open Event: PID=%d, GID=%d, UID=%d, TID=%d, File=%s Flags=%d, timestamp=%d\n",
 					event_open.PID, event_open.GID, event_open.UID, event_open.TID, filename, event_open.Flags, event_open.Timestamp)
 			}
 		}
@@ -198,11 +195,9 @@ func main() {
 				continue
 			}
 
-			exist := slices.Contains(excludeTIDs[:], event_close.TID)
-			if !exist {
-				fmt.Printf("Event: PID=%d, GID=%d, UID=%d, TID=%d, fd=%d, timestamp=%d\n",
-					event_close.PID, event_close.GID, event_close.UID, event_close.TID, event_close.FD, event_close.Timestamp)
-			}
+			fmt.Printf("Close Event: PID=%d, GID=%d, UID=%d, TID=%d, fd=%d, timestamp=%d\n",
+				event_close.PID, event_close.GID, event_close.UID, event_close.TID, event_close.FD, event_close.Timestamp)
+
 		}
 		<-ctx.Done() // Wait for cancellation
 	}()
@@ -222,11 +217,8 @@ func main() {
 				continue
 			}
 
-			exist := slices.Contains(excludeTIDs[:], read_event.TID)
-			if !exist {
-				fmt.Printf("Event: PID=%d, GID=%d, UID=%d, TID=%d, SIZE=%d, timestamp=%d\n",
-					read_event.PID, read_event.GID, read_event.UID, read_event.TID, read_event.SIZE, read_event.Timestamp)
-			}
+			fmt.Printf("Read Event: PID=%d, GID=%d, UID=%d, TID=%d, SIZE=%d, timestamp=%d\n",
+				read_event.PID, read_event.GID, read_event.UID, read_event.TID, read_event.SIZE, read_event.Timestamp)
 
 		}
 		<-ctx.Done() // Wait for cancellation
@@ -247,11 +239,9 @@ func main() {
 				continue
 			}
 
-			exist := slices.Contains(excludeTIDs[:], write_event.TID)
-			if !exist {
-				fmt.Printf("Event: PID=%d, GID=%d, UID=%d, TID=%d, SIZE=%d, timestamp=%d\n",
-					write_event.PID, write_event.GID, write_event.UID, write_event.TID, write_event.SIZE, write_event.Timestamp)
-			}
+			fmt.Printf("Write Event: PID=%d, GID=%d, UID=%d, TID=%d, SIZE=%d, timestamp=%d\n",
+				write_event.PID, write_event.GID, write_event.UID, write_event.TID, write_event.SIZE, write_event.Timestamp)
+
 		}
 		<-ctx.Done() // Wait for cancellation
 	}()
